@@ -1,4 +1,8 @@
 Revision history for Perl extension Math::Calculus::Expression.
 
-0.1 Original Version
+0.2
+* Added AUTOLOAD to load appropriate modules to handle unknown methods.
+* Improvements to the simplifier.
 
+0.1
+* Original Version

@@ -2,13 +2,13 @@
 # ########################################################################################
 # A CALCULUS EXPRESSION OBJECT
 # Common algebra routines module by Jonathan Worthington.
-# Copyright (C) Jonathan Worthington 2004
+# Copyright (C) Jonathan Worthington 2004-2005
 # This module may be used and distributed under the same terms as Perl.
 # ########################################################################################
 
 package Math::Calculus::Expression;
 use strict;
-our $VERSION = '0.1';
+our $VERSION = '0.2';
 
 =head1 NAME
 
@@ -349,6 +349,53 @@ sub getError {
 }
 
 
+# Any other methods.
+# ##################
+
+=item Other Methods
+
+Any other method call is taken to refer to a subclass of Expression. The first letter of the
+name of the method invoked is capitalized, then a module by that name is loaded (if it exists)
+and the method is called on it. This works for, for example, the Differentiate module; calling
+the differentiate method on an Expression will load the Differentiate module and call the
+differentiate method. If a module cannot be loaded or the method cannot be called, then this
+module will die.
+
+=cut
+
+sub AUTOLOAD {
+	# Grab the params to pass on.
+	my ($self, @params) = @_;
+	
+	# Get the name of the method called; skip if it is destroy.
+	my $name = our $AUTOLOAD;
+	return undef if $name =~ /::DESTROY$/;
+	$name =~ s/^.+::([A-Za-z0-9]+)(_\w+)?$/$1$2/;
+	my $modName = ucfirst $1;
+	
+	# Attempt to load the module and call the method.
+	if (wantarray) {
+		my @result = eval {
+			require "Math/Calculus/$modName.pm";
+			bless $self, "Math::Calculus::$modName";
+			my $meth = eval('\&Math::Calculus::' . $modName . '::' . $name);
+			$meth->($self, @params)
+		};
+		die $@ if $@;
+		return @result;
+	} else {
+		my $result = eval {
+			require "Math/Calculus/$modName.pm";
+			bless $self, "Math::Calculus::$modName";
+			my $meth = eval('\&Math::Calculus::' . $modName . '::' . $name);
+			$meth->($self, @params)
+		};
+		die $@ if $@;
+		return $result;
+	}
+}
+
+
 =head1 SEE ALSO
 
 The author of this module has a website at L<http://www.jwcs.net/~jonathan/>, which has
@@ -551,10 +598,13 @@ sub recSimplify {
 	# If it's just a node, return it. We can't do a great deal with nodes.
 	return $tree unless ref $tree;
 	
-	# Otherwise, simplify each operand before we go any further.
-	my $left = $self->recSimplify($tree->{'operand1'});
-	my $right = $self->recSimplify($tree->{'operand2'});
-
+	# Pull out left and right branches for neatness.
+	my ($left, $right) = ($tree->{'operand1'}, $tree->{'operand2'});
+	
+	## RECURSIVELY SIMPLIFTY TREES
+	$left = $self->recSimplify($left);
+	$right = $self->recSimplify($right);
+	
 	## CONSTANT EVALUATION
 	
 	# Get any available numeric evaluations of the left and right branches.
@@ -564,6 +614,72 @@ sub recSimplify {
 	# If they have a numeric evaluation, assign them to the actual values.
 	$left = $leftval if defined($leftval);
 	$right = $rightval if defined($rightval);
+	
+	## SHIFTING NEGATIVES
+	## These simplifications are not "the final word", indeed dealing with them
+	## allows further simplifications to take place. So we modify the tree "in
+	## place".
+	
+	# x - (-y) = x + y
+	if ($tree->{'operation'} eq '-') {
+		if (!(ref $right) && $right =~ /^-(.+)$/) {
+			$tree->{'operation'} = '+';
+			$right = $1;
+		} elsif (ref $right && $right->{'operation'} =~ /^-(.+)$/) {
+			$tree->{'operation'} = '+';
+			$right->{'operation'} = $1;
+		}
+	}
+	
+	# x + (-y) = x - y
+	elsif ($tree->{'operation'} eq '+') {
+		if (!(ref $right) && $right =~ /^-(.+)$/) {
+			$tree->{'operation'} = '-';
+			$right = $1;
+		} elsif (ref $right && $right->{'operation'} =~ /^-(.+)$/) {
+			$tree->{'operation'} = '-';
+			$right->{'operation'} = $1;
+		}
+	}
+	
+	# x - -y*z = x + y*z
+	if ($tree->{'operation'} eq '-' && ref $right && $right->{'operation'} eq '*') {
+		if (!(ref $right->{'operand1'}) && $right->{'operand1'} =~ /^-(.+)$/) {
+			$tree->{'operation'} = '+';
+			$right->{'operand1'} = $1;
+		} elsif (ref($right->{'operand1'}) && $right->{'operand1'}->{'operation'} =~ /^-(.+)$/) {
+			$tree->{'operation'} = '+';
+			$right->{'operand1'}->{'operation'} = $1;
+		}
+	}
+	
+	# x + -y*z = x - y*z
+	elsif ($tree->{'operation'} eq '+' && ref $right && $right->{'operation'} eq '*') {
+		if (!(ref $right->{'operand1'}) && $right->{'operand1'} =~ /^-(.+)$/) {
+			$tree->{'operation'} = '-';
+			$right->{'operand1'} = $1;
+		} elsif (ref $right->{'operand1'} && $right->{'operand1'}->{'operation'} =~ /^-(.+)$/) {
+			$tree->{'operation'} = '-';
+			$right->{'operand1'}->{'operation'} = $1;
+		}
+	}
+	
+	## MIGRATE CONSTANTS UP THE TREE
+	
+	# x * c = c * x
+	if ($tree->{'operation'} eq '*' && !ref($right) && $right =~ /^-?\d+(\.\d+)?$/) {
+		($left, $right) = ($right, $left);
+	
+	# x * c * y = c * x * y
+	} elsif ($tree->{'operation'} eq '*' && ref $right && $right->{'operation'} eq '*' &&
+	    $right->{'operand1'} =~ /^-?\d+(\.\d+)?$/) {
+		($left, $right->{'operand1'}) = ($right->{'operand1'}, $left);
+	
+	# x * y * c = x * c * y
+	} elsif ($tree->{'operation'} eq '*' && ref $right && $right->{'operation'} eq '*' &&
+	    $right->{'operand2'} =~ /^-?\d+(\.\d+)?$/) {
+		($right->{'operand1'}, $right->{'operand2'}) = ($right->{'operand2'}, $right->{'operand1'});
+	}
 	
 	## NULL OPERATORS
 	
@@ -578,6 +694,13 @@ sub recSimplify {
 	# x - 0 = x
 	if ($tree->{'operation'} eq '-' && (!(ref $right) && $right eq '0')) {
 		return $left;
+	}
+	
+	# x - 0 + y = x - y
+	# x + 0 + y = x + y
+	if ($tree->{'operation'} =~ /^[+-]$/ && ref $right && $right->{'operation'} =~ /^[+-]$/ &&
+	    !(ref $right->{'operand1'}) && $right->{'operand1'} eq '0') {
+		$right = $right->{'operand2'};
 	}
 	
 	# 1 * x = x * 1 = x
@@ -627,7 +750,7 @@ sub recSimplify {
 	
 	## SUBTRACTION OF AN EXPRESSION FROM ITSELF
 	
-	# x / x = 1
+	# x - x = 0
 	if ($tree->{'operation'} eq '-' && $self->isIdentical($left, $right)) {
 		return 0;
 	}
@@ -698,7 +821,67 @@ sub recSimplify {
 			return $left->{'operand1'};
 		}
 	}
-		
+	
+	## MULTIPLICATION CHAINS BECOME POWERS
+	
+	# e * e = e^2
+	if ($tree->{'operation'} eq '*' && $self->isIdentical($left, $right)) {
+		return {
+			operation	=> '^',
+			operand1	=> $left,
+			operand2	=> 2
+		};
+	}
+	
+	# -e * e = -(e^2)
+	elsif ($tree->{'operation'} eq '*') {
+		# Check if left is negative.
+		if (ref $left && $left->{'operation'} =~ /^-(.+)$/) {
+			$left->{'operation'} = $1;
+			if ($self->isIdentical($left, $right)) {
+				return {
+					operation	=> '-',
+					operand1	=> 0,
+					operand2	=> {
+						operation	=> '^',
+						operand1	=> $left,
+						operand2	=> 2
+					}
+				};
+			} else {
+				$left->{'operation'} = "-$1";
+			}	
+		} elsif (!(ref $left) && $left =~ /^-(.+)$/) {
+			$left = $1;
+			if ($self->isIdentical($left, $right)) {
+				return {
+					operation	=> '-',
+					operand1	=> 0,
+					operand2	=> {
+						operation	=> '^',
+						operand1	=> $left,
+						operand2	=> 2
+					}
+				};
+			} else {
+				$left = "-$1";
+			}
+		}
+	}
+	
+	## TRIG IDENTITIES
+	
+	# cos^2 - sin^2 = 1
+	if ($tree->{'operation'} eq '-' && ref $left && ref $right &&
+	    $left->{'operation'} eq '^' && $right->{'operation'} eq '^' &&
+	    (!ref $left->{'operand2'}) && $left->{'operand2'} == 2 &&
+	    (!ref $right->{'operand2'}) && $right->{'operand2'} == 2 &&
+	    ref $left->{'operand1'} && $left->{'operand1'}->{'operation'} =~ /-?cos$/ &&
+	    ref $right->{'operand1'} && $right->{'operand1'}->{'operation'} =~ /-?sin$/ &&
+	    $self->isIdentical($left->{'operand1'}->{'operand1'}, $right->{'operand1'}->{'operand1'})) {
+		return 1;
+	}
+	
 	## NO SIMPLIFICATION POSSIBLE - BUILD NEW TREE OF SIMPLIFIED SUBTREES
 	
 	# If we get here, just build and return a new tree, which may have no changes.
@@ -935,7 +1118,8 @@ sub numericEvaluation {
 		} elsif ($tree->{'operation'} eq '^' && defined($leftval) && defined($rightval)) {
 			# Multiply and return.
 			return $leftval ^ $rightval;
-		 		# Otherwise, we can't do numerical operations. Return undef.
+		 
+		# Otherwise, we can't do numerical operations. Return undef.
 		} else {
 			return undef;
 		}
@@ -1008,6 +1192,5 @@ sub isProperlyNested {
 
 
 1;
-
 
 
