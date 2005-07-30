@@ -1,4 +1,3 @@
-#!/usr/bin/perl
 # ########################################################################################
 # A CALCULUS EXPRESSION OBJECT
 # Common algebra routines module by Jonathan Worthington.
@@ -8,7 +7,7 @@
 
 package Math::Calculus::Expression;
 use strict;
-our $VERSION = '0.2.1';
+our $VERSION = '0.2.2';
 
 =head1 NAME
 
